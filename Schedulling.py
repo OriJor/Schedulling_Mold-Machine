@@ -67,14 +67,14 @@ def hypotheses(I):
     return True
 
 
-def reduction_Dataframe(I):
+def reduction_Dataframe(I, columns):
     # Number of different pieces types a mold can do
-    reduction = pd.DataFrame(columns = ["Item", "Mold"])
+    reduction = pd.DataFrame(columns = columns)
     
     for i in range(0,I.shape[0]):
         for j in range(0, I.shape[1]):
             if(I[i][j] == 1):
-                reduction = reduction.append({"Item": i, "Mold": j}, ignore_index = True)
+                reduction = reduction.append({columns[0]: i, columns[1]: j}, ignore_index = True)
     
     return reduction
     
@@ -175,13 +175,15 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
         return 0
     
     
-    reduction = reduction_Dataframe(I)
+    reduction = reduction_Dataframe(I, ["Item", "Mold"])
     
+    moldMachine = reduction_Dataframe(M, ["Mold", "Machine"])
     
     
     
     # omega(items) -> omega (z) 
     omega = expand(omega, reduction)
+    # V(i,j,k) -> V(z,k)
     V = shrink(V, reduction)
     model = Model()
     Z = reduction.index
@@ -202,6 +204,11 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
         logging.warning("len(Z) != len(d) is breaking the hypotheses we have set :(  ")
         return 0
     
+    
+    for z in Z:
+        for k in K:
+            model += y[z][k] >= 0
+    
     for z in Z:
         model += xsum(y[z][k] for k in K) <= d[z]   
     
@@ -211,15 +218,44 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     
     
     for k in K:    
-        model += xsum(n[j][k]*(it[j][k]+dt[j][k]) for j in J)+xsum(V[z][k]*y[z][k]+ b[z][k]*st[z][k] for z in Z)
+        model += xsum(n[j][k]*(it[j][k]+dt[j][k]) for j in J)+xsum(V[z][k]*y[z][k]+ b[z][k]*st[z][k] for z in Z) <=tm[k]
     
-    """
-    for j in J:
+    
+    for z in Z:
         for k in K:
-                
-            model += """
-
-
+            model += b[z][k] <= xsum(I[z][j]*n[j][k] for j in J)             
+            
+    
+    model.optimize()
+    
+    
+    print("Total demand: "+str(np.sum(d)))
+    
+    
+    
+    sum = 0
+    for k in K:
+        for z in Z:
+           sum+=y[z][k].x
+           
+    print("Total Production ", sum) 
+    
+    print("Schedulle ", sum) 
+    for k in K:
+        print("Machine "+str(k)+ ":")
+        for z in Z:
+            i, j = reduction.loc[z,["Item", "Mold"]]
+            if n[j][k]>=0.99:
+                print("Item: "+ str(i)+ ", Mold: "+str(j)+ ", # pieces: "+ str(y[z][k].x))
+    """
+    for k in K:
+        for z in Z:
+            print("Value b({}, {}): ".format(z,k)+str(b[z][k].x))
+            
+    for k in K:
+        for j in J:
+            print("Value n({}, {}): ".format(j,k)+str(n[j][k].x))
+"""
     ## Bound
 
     
@@ -257,6 +293,7 @@ n_items = 6
 d = 30000*np.random.rand(n_items)
 #omega = 10*np.ones(len(d))
 omega = np.random.rand(n_items)+1.2
+omega = 5*np.ones(n_items)
 np.random.seed(3)
 M = np.round(np.random.rand(n_mold, n_machine))
 
@@ -287,11 +324,11 @@ I = np.array([[1,0,0,0,0],
 #Almost diagonal, mold 4 can produce items 4 and 5 (different colors diference)
 
 
-st = 300*np.ones((n_items,n_mold)) # 5min set-up
+st = 30*np.ones((n_items,n_mold)) # 5min set-up
 V = 3*np.ones((n_items, n_mold, n_machine)) # 3 sec / piece
 it = 3600*np.ones((n_mold, n_machine)) # 1h each operation
 dt = 1800*np.ones((n_mold, n_machine)) # 30min each operation
-tm = 3600*np.ones((n_machine))
+tm = 360000*np.ones((n_machine))
 
 init(n_items, n_mold, n_machine, d, omega, M, I, st, it,dt, tm, V, np.float32)
 
