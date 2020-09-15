@@ -12,7 +12,6 @@ from scipy.optimize import linprog
 import mip
 from mip import Model, xsum, minimize, maximize, OptimizationStatus, BINARY, INTEGER
 from itertools import product
-
 """
 
 
@@ -133,13 +132,27 @@ def shrink(X,reduction):
         logging.warning("How you got a 4+-Dimensional array ?????? !!!")
         return None
 
+
+
+def sparse_binary_matrix(X):
+    
+    nx,ny = X.shape[0], X.shape[1]
+    X = np.zeros((nx,ny))
+    for i in range(0, nx):
+        dx = int(np.round((ny-1)*np.random.rand()))
+        X[i][dx] =1
+   
+    return X
+
+
+
 def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     
     J = set(range(0, molds))
     K = set(range(0, machines))
     Items = set(range(0, items))
     d = d.astype(np.int32)
-    M = M.astype(np.bool)
+    #M = M.astype(np.bool)
     I = I.astype(np.bool)
     omega = omega.astype(dtype)
     st = st.astype(dtype)
@@ -178,11 +191,13 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     reduction = reduction_Dataframe(I, ["Item", "Mold"])
     
     moldMachine = reduction_Dataframe(M, ["Mold", "Machine"])
-    
+    print(moldMachine)
     
     
     # omega(items) -> omega (z) 
+    # demand(items) -> demand(z)
     omega = expand(omega, reduction)
+    d = expand(d, reduction)
     # V(i,j,k) -> V(z,k)
     V = shrink(V, reduction)
     model = Model()
@@ -204,48 +219,53 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
         logging.warning("len(Z) != len(d) is breaking the hypotheses we have set :(  ")
         return 0
     
+    for k in K:
+        for z in Z:
+            model += y[z][k] - d[z]*b[z][k] <=  0  # c1: production on each machine/mold <= than demand multiplied by the decision boolean
+            model += y[z][k] >= 0  # c2: production always positive Z+
+
+            
     
     for z in Z:
-        for k in K:
-            model += y[z][k] >= 0
+        model += xsum(y[z][k] for k in K) <= d[z]    #c3: Production on all k machines < demand
     
-    for z in Z:
-        model += xsum(y[z][k] for k in K) <= d[z]   
-    
-    for z in Z:
-        for k in K:
-            model += y[z][k] <= d[z]*b[z][k]
-    
+
     
     for k in K:    
-        model += xsum(n[j][k]*(it[j][k]+dt[j][k]) for j in J)+xsum(V[z][k]*y[z][k]+ b[z][k]*st[z][k] for z in Z) <=tm[k]
+        model += xsum(n[j][k]*(it[j][k]+dt[j][k]) for j in J)+xsum(V[z][k]*y[z][k]+b[z][k]*st[z][k] for z in Z) <=tm[k]
+        
+    
+    for j in J:
+        model += xsum(n[j][k] for k in K) <=1   #c5: Cada Molde a una maquina
     
     
-    for z in Z:
-        for k in K:
-            model += b[z][k] <= xsum(I[z][j]*n[j][k] for j in J)             
+    for k in K:
+        for j in J:
+            model += n[j][k] <= M[j][k]
+    
+    for k in K:
+        for z in Z:
+            i, j = reduction.loc[z,["Item", "Mold"]]
+            model += b[z][k] <= M[j][k]
+            
             
     
     model.optimize()
     
     
     print("Total demand: "+str(np.sum(d)))
+    print(str(xsum(y[z][k].x for z in Z for k in K)))
     
-    
-    
-    sum = 0
-    for k in K:
-        for z in Z:
-           sum+=y[z][k].x
+
            
     print("Total Production ", sum) 
     
-    print("Schedulle ", sum) 
+    print("Schedulle ") 
     for k in K:
         print("Machine "+str(k)+ ":")
         for z in Z:
             i, j = reduction.loc[z,["Item", "Mold"]]
-            if n[j][k]>=0.99:
+            if y[z][k].x>0:
                 print("Item: "+ str(i)+ ", Mold: "+str(j)+ ", # pieces: "+ str(y[z][k].x))
     """
     for k in K:
@@ -284,17 +304,18 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
 
 ## Example 
 
-n_machine = 3
-n_mold = 5
-n_items = 6
+n_machine = 52
+n_mold = 100
+n_items = 120
 #Item by mold
-
+np.random.seed(3)
 #d = np.array([1000, 20000, 5000, 300, 7000, 12000])
 d = 30000*np.random.rand(n_items)
 #omega = 10*np.ones(len(d))
+
 omega = np.random.rand(n_items)+1.2
 omega = 5*np.ones(n_items)
-np.random.seed(3)
+
 M = np.round(np.random.rand(n_mold, n_machine))
 
 # Mold        0  1  2  3  4
@@ -304,15 +325,17 @@ M = np.round(np.random.rand(n_mold, n_machine))
  
 # Machine 1 only can work with mold 0! 
 
-I = np.array([[1,0,0,0,0],
+""""I = np.array([[1,0,0,0,0],
              [0,1,0,0,0],
              [0,0,1,0,0],
              [0,0,0,1,0],
              [0,0,0,0,1],
-             [0,0,0,0,1]])
+             [0,0,0,0,1]])"""
+
+I = sparse_binary_matrix(np.zeros((n_items, n_mold)))
 
 
-
+print(I)
 # Mold     0  1  2  3  4
 # Item 0: [1. 1. 0. 1. 1.]
 # Item 1: [1. 0. 0. 0. 0.]
@@ -324,11 +347,11 @@ I = np.array([[1,0,0,0,0],
 #Almost diagonal, mold 4 can produce items 4 and 5 (different colors diference)
 
 
-st = 30*np.ones((n_items,n_mold)) # 5min set-up
+st = 3000*np.ones((n_items,n_mold)) # 5min set-up
 V = 3*np.ones((n_items, n_mold, n_machine)) # 3 sec / piece
 it = 3600*np.ones((n_mold, n_machine)) # 1h each operation
 dt = 1800*np.ones((n_mold, n_machine)) # 30min each operation
-tm = 360000*np.ones((n_machine))
+tm = 120000*np.ones((n_machine))
 
 init(n_items, n_mold, n_machine, d, omega, M, I, st, it,dt, tm, V, np.float32)
 
