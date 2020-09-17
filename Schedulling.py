@@ -11,6 +11,8 @@ import pandas as pd
 from scipy.optimize import linprog
 import mip
 from mip import Model, xsum, minimize, maximize, OptimizationStatus, BINARY, INTEGER
+import time
+
 
 """
 
@@ -19,15 +21,6 @@ from mip import Model, xsum, minimize, maximize, OptimizationStatus, BINARY, INT
 """
 
 
-def size_assert(array, lenght):
-    if (isinstance(lenght, int)):
-        lenght = np.array([lenght])
-        array = array.reshape(int(lenght),1)
-        
-    if(array.ndim == len(lenght)):
-        for i in range(0, array.ndim):          
-            assert(array.shape[i] == lenght[i])    
-    return True
 """
 @see: 
 
@@ -56,6 +49,29 @@ Variables number: n_items*n_machines*n_molds
 
 
 """ 
+
+zj = {} # Values of z with mold j
+jk = {} # Values of j with machine k
+iz = {} # Items i ->  z
+ik = {} # Items i used in machine k
+zk = {} # Values of z with machine k
+kz = {} # Machines k that can do a product z
+kj = {} # Machines k that can use mold j
+ij = {} # Set of pieces i that can be produced using mold j
+ji = {} # Set of molds j that can be used for producing piece i ## Normally 1 per mold
+reduction = pd.DataFrame()
+
+
+def size_assert(array, lenght):
+    if (isinstance(lenght, int)):
+        lenght = np.array([lenght])
+        array = array.reshape(int(lenght),1)
+        
+    if(array.ndim == len(lenght)):
+        for i in range(0, array.ndim):          
+            assert(array.shape[i] == lenght[i])    
+    return True
+
 def hypotheses(I):
     
     # Only one item per mold.
@@ -160,19 +176,17 @@ def Z(j, reduction):
     #i, j = reduction.loc[z,["Item", "Mold"]]
     
 
-def variables_relations(Z, J, K, I, M):   
-    reduction = reduction_Dataframe(I, ["Item", "Mold"])
-    moldMachine = reduction_Dataframe(M, ["Mold", "Machine"])
-    
-    zj = {} # Values of z with mold j
-    jk = {} # Values of j with machine k
-    iz = {} # Items i ->  z
-    ik = {} # Items i used in machine k
-    zk = {} # Values of z with machine k
-    kz = {} # Machines k that can do a product z
-    kj = {} # Machines k that can use mold j
-    ij = {} # Set of pieces i that can be produced using mold j
-    ji = {} # Set of molds j that can be used for producing piece i ## Normally 1 per mold
+def variables_relations(I, M):   
+        
+    global zj  # Values of z with mold j
+    global jk  # Values of j with machine k
+    global iz  # Items i ->  z
+    global ik  # Items i used in machine k
+    global zk  # Values of z with machine k
+    global kz  # Machines k that can do a product z
+    global kj  # Machines k that can use mold j
+    global ij  # Set of pieces i that can be produced using mold j
+    global ji  # Set of molds j that can be used for producing piece i ## Normally 1 per mold
     
     for j in J:
         zj[j] = reduction[reduction["Mold"]==j].index.values.tolist()
@@ -223,17 +237,28 @@ def variables_relations(Z, J, K, I, M):
         ji[i] = []
         for j, x in enumerate(I[i, :]):
             if (x == 1):
-                ji[i].append(j*x)
+                ji[i].append(j*x)       
                 
-                
-                
-                
-    return zj, jk, iz, ik, zk, kz, kj, ij, ji
+    return True
 
-def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
+def init(parameters):
     
+    machines = parameters['machines']
+    molds = parameters['molds'] 
+    items = parameters["items"] 
+    d = parameters["d"] 
+    omega = parameters["omega"] 
+    M = parameters["M"]
+    I = parameters["I"]
+    st = parameters["st"] 
+    V = parameters["V"] 
+    it = parameters["it"] 
+    dt = parameters["dt"] 
+    tm = parameters["tm"]
+    dtype = parameters["dtype"] 
     
     """ Set of variables """
+    global J,K,Items
     J = set(range(0, molds))
     K = set(range(0, machines))
     Items = set(range(0, items))
@@ -243,7 +268,7 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     
     
     d = d.astype(np.int32)
-    #M = M.astype(np.bool)
+    M = M.astype(np.bool)
     I = I.astype(np.bool)
     omega = omega.astype(dtype)
     st = st.astype(dtype)
@@ -280,10 +305,19 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     
 
     """ Data reduction """
-    
+    global reduction, moldMachine
     reduction = reduction_Dataframe(I, ["Item", "Mold"])
+    moldMachine = reduction_Dataframe(M, ["Mold", "Machine"])
     
+    global Z
     Z = reduction.index
+    
+    
+    variables_relations(I, M)
+    reduction = reduction_Dataframe(I, ["Item", "Mold"])
+    reduction.to_csv("reduction.csv")
+    
+    
     #print(moldMachine)
     # We suppose len(Z) == len(d) !! It's the hypothesis ! If not, it is doable but harder :(
     
@@ -301,18 +335,36 @@ def init(items, molds, machines, d, omega, M, I, st, it,dt, tm, V, dtype):
     
     V = shrink(V, reduction)
     
-    return Z, J,K, d, omega, M, I, st, it, dt, tm, V
+    d, omega, st, it, dt, tm, V,
+    
+    parameters = {"d":d, "omega": omega, "st":st, "it":it, "dt": dt, "tm": tm, "V": V, "M": I, "I": I}
     
     
+    
+    return parameters
+    
+""" Linear Programmation problem: """
 
-def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
+def LPModel(parameters_model,  hard_mold_constraint, dtype):
     
-    reduction = reduction_Dataframe(I, ["Item", "Mold"])
-    zj, jk, iz, ik, zk, kz, kj, ij, ji = variables_relations(Z, J, K, I, M)
+    
+    
+   
+    d = parameters_model["d"]
+    omega = parameters_model["omega"]
+    st = parameters_model["st"]
+    it = parameters_model["it"]
+    dt = parameters_model["dt"]
+    tm = parameters_model["tm"]
+    V = parameters_model["V"]
+    
+    
     
     machines = len(K)
     molds = len(J)
     items = len(Z)
+    average_time_production = np.average(V) # 3seg/piece
+    t_optimal = average_time_production*np.sum(d)/(machines+1)
 
     """ Model """
     
@@ -327,12 +379,12 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
     #binary variables indicating if mold replacement(j,k) is used or not: b, n
     b = [[model.add_var(name = "b({},{})".format(z,k) ,var_type =BINARY) for k in K] for z in Z]
     n = [[model.add_var(name = "n({},{})".format(j,k), var_type = BINARY) for k in K] for j in J]
-    
+
     
     """ Function to maximize"""
     
     model.objective = maximize(xsum(omega[z]*y[z][k] for z in Z for k in K))
-    
+    #model.objective = minimize(xsum((xsum(n[j][k]*mold_time[j][k] for j in J for k in K)+xsum(V[z][k]*y[z][k]+b[z][k]*st[z][k] for z in Z f))))
     
     
     """ Restrictions """
@@ -349,11 +401,7 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
                 model += y[z][k] == 0
             else:
                 model += y[z][k] >= 0
-                
-
-
-            
-    
+                   
     
     """ ----------------- c1: Production on each z (machine-mold) <= demand*[1 or 0] depending if we use the machine or not ----------    I*J equations  """
     
@@ -361,7 +409,7 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
         for k in kz[z]:
             model += y[z][k] - d[z]*b[z][k] <=  0  
 
-    
+     
     
     """ ----------------- c3: Production on each all machines <= demand_item ----------               I equations  """
     for z in Z:
@@ -379,12 +427,15 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
     for j in J:
         model += xsum(n[j][k]*mold_time[j][k] for k in kj[j]) +xsum(y[z][k]*V[z][k] +b[z][k]*st[z][k] for z in zj[j]) <= tm_max
         
-       
+
+ 
+    #for k in K:
+     #   model += xsum(y[z][k]*V[z][k] for z in zk[k])- xsum(n[j][k]*mold_time[j][k] for j in jk[k]) >= 0
     """ ----------------- c5 (opt): Each machine uses one mold ----------   We are not sure that is a good equation            J equations  """ 
-    
-    for j in J:
-        model += xsum(n[j][k] for k in K) <=1
-    
+    if (hard_mold_constraint):
+        for j in J:
+            model += xsum(n[j][k] for k in kj[j]) <=1
+      
     
     
     """ ---------------- c6: Assign mold j to machine k if there is at least one piece produced with this mold-machine pair, regardless of the type of piece--------- I*J equation """
@@ -424,76 +475,32 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
     """ for k in K:    
         model += xsum(n[j][k]*mold_time[j][k] for j in jj[k])+xsum(V[z][k]*y[z][k]+b[z][k]*st[z][k] for z in zk[k]) >= 1 """
     
+     # Time variable:
+    Tj = np.zeros((items, machines), dtype = dtype)
     
     
+    model.preprocess = 0
+   
     
-    model.optimize()
-    
-    
-    
-    
-    
-    # Time variable:
-    Tj = np.zeros((molds, machines), dtype = dtype)
-    
-    for k in K:
-        for j in jk[k]:
-            Tj[j,k] = n[j][k].x*mold_time[j,k]+xsum(y[z][k]*V[z][k] + b[z][k]*st[z][k] for z in zj[j])
-    
-    Tk = np.sum(Tj, axis = 0)
-             
-            
-            
-            
-    """ Results """
-    
-    
-    
-    production = pd.DataFrame()
-    sumb = 0
-    print("Schedulle ") 
-    for k in K:
-        print("Machine "+str(k)+ " with time " + str(Tk[k]))
-        print("Can use the following molds: "+ str(jk[k]) +" and items: ", ik[k])
-        for z in Z:
-            i, j = reduction.loc[z,["Item", "Mold"]]
-            if y[z][k].x>0:
-                sumb += 1
-                production = production.append({"Machine": k, "Item": i, "Mold": j, "#pieces": y[z][k].x,  "Time": Tj[j,k]}, ignore_index = True)
-                print("Item: "+ str(i)+ ", Mold: "+str(j)+ ", # pieces: "+ str(y[z][k].x) + " and time: "+str(Tj[j,k]))
-    
-    total_demand = np.sum(d)
-    total_production = float(xsum(y[z][k].x for z in Z for k in K))
-    print("\nTotal demand: "+str(total_demand))
-    print("Total Production: "+str(total_production))
-    
-    prod_machine = np.zeros((machines))
-    prod_items = np.zeros((items))
-    
-    
-    for z in Z:
-        prod_items[z] = xsum(y[z][k] for k in K)
-    for k in K:
-        prod_machine[k] = xsum(y[z][k] for z in Z)
-    
-    if(total_production<total_demand):
-        prod_diference = d - prod_items
-        for z,x in enumerate(prod_diference):
-            if(x>0):
-                print("We can't produce "+str(x)+ " unities of item "+str(iz[z])+ " with the following molds: "+str(ji[iz[z]]))
+    status = model.optimize(max_seconds_same_incumbent = 50 )
+     
+    if status == OptimizationStatus.OPTIMAL:
+        
+        print("Solution with cost: {}".format(model.objective_value))
         
     
+       
     
-    print("sum of n: "+str(xsum(n[j][k].x for j in J for k in K)))
-    print("sum of b: "+str(xsum(b[z][k].x for z in Z for k in K))+" vs "+ str(sumb))
-    
+        for k in K:
+            for z in zk[k]:
+                j = ji[z][0] # Only one mold per z
+                Tj[z,k] = n[j][k].x*mold_time[j,k]+y[z][k].x*V[z][k]+b[z][k].x*st[z][k]
+                
+                #Tj[z,k] = y[z][k].x*V[z][k]
+    else: 
+        logging.warning("Simulation failed !! I can't find any solution for this problem :( ")
+  
 
-    """ Save results """
-    
-    
-    production.to_csv("production.csv")
-    #reduction.to_csv("reduction.csv")
-    
     X = np.zeros((items, machines))
     B = np.zeros((items, machines))
     N = np.zeros((molds, machines))
@@ -504,20 +511,100 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
             X[z,k] = y[z][k].x
         for j in J:
             N[j,k] = n[j][k].x
+    
+    results = {"B": B, "X": X, "N": N, "Tj": Tj}
+    
+    return results
+
+
+def show_results(parameters, results):
+    
+    b = results["B"]
+    y = results["X"]
+    n = results['N']
+    Tj = results["Tj"]
+    
+    d = parameters["d"]
+    
+    
+    
+    
+    Tk = np.sum(Tj, axis = 0)
+                         
+    """ Results """
+
+    production = pd.DataFrame()
+    sumb = 0
+    print("Schedulle ") 
+    for k in K:
+        print("Machine "+str(k)+ " with time " + str(Tk[k]/3600)+"h")
+        print("Can use the following molds: "+ str(jk[k]) +" and items: ", ik[k])
+        for z in Z:
+            i, j = reduction.loc[z,["Item", "Mold"]]
+            if y[z,k]>0:
+                sumb += 1
+                production = production.append({"Machine": k, "Item": i, "Mold": j, "#pieces": y[z, k],  "Time": Tj[z,k]}, ignore_index = True)
+                print("Item: "+ str(i)+ ", Mold: "+str(j)+ ", # pieces: "+ str(y[z, k]) + " and time: "+str(Tj[z,k]/3600)+"h")
+    
+    total_demand = np.sum(d)
+    total_production = np.sum(np.sum(y))
+    print("\nTotal demand: "+str(total_demand))
+    print("Total Production: "+str(total_production))
+    
+    prod_machine = np.zeros((len(K)))
+    prod_items = np.zeros((len(Z)))
+    
+    
+    
+    prod_items = np.sum(y, axis = 1)
+    
+    prod_machine = np.sum(y, axis = 0)
+    
+    if(total_production<total_demand):
+        prod_diference = d - prod_items
+        for z,x in enumerate(prod_diference):
+            if(x>0):
+                print("We can't produce "+str(x)+ " unities of item "+str(iz[z])+ " with the following molds: "+str(ji[iz[z]]))
+        
+    
+    
+    print("sum of n: "+str(np.sum(np.sum(n, axis = 0))))
+    print("sum of b: "+str(np.sum(np.sum(b, axis = 0)))+" vs "+ str(sumb))
+    
+    production.to_csv("production.csv")
+
+    
+    return 0
+
+
+
+# Mold Overlapping Detection
+# Finds if there is any mold overlapping, and if we can find some time intervals for not overlapping. 
+# If it is not possible
+
+def MOD(results):
+    n = results['N']
+    mod = False
+    overlapping = []
+    for j in J:
+        mold_sum = 0
+        for k in kj[j]:
+            mold_sum = n[j][k]
             
-
-
-    ## Bound
+        if mold_sum>1:
+            mod = True 
+            overlapping.append(j)
     
+    if (not mod):
+        return False
+    else: 
     
+        b = results["B"]
+        y = results["X"]
+   
+        Tj = results["Tj"]
     
-
-
-    
-
-
-    
-    return B, X, N, Tj
+    return None
 
 
 
@@ -527,73 +614,103 @@ def LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, dtype):
 
 
 
-
-
-
-
-
+parameters = {}
 
 ## Example 
 
-n_machine = 20
-n_mold = 30
-n_items = 40   # Items > mold always
+n_machine = 8
+n_mold = 10
+n_items = 14  # Items > mold always
 
-d = 300000*np.random.rand(n_items)
-#omega = 10*np.ones(len(d))
+parameters['machines'] = n_machine
+parameters['molds'] = n_mold
+parameters["items"] = n_items
 
-omega = 5*np.ones(n_items)
+parameters["d"] = np.round(300000*np.random.rand(n_items))
+parameters["omega"] = 5*np.ones(n_items)
 
-M = sparse_binary_matrix(np.zeros((n_mold, n_machine)),0.7 )
-I = sparse_binary_matrix(np.zeros((n_items, n_mold)), 0)
+parameters["M"] = sparse_binary_matrix(np.zeros((n_mold, n_machine)),0.7 )
+parameters["I"] = sparse_binary_matrix(np.zeros((n_items, n_mold)), 0)
+ 
+
+parameters["st"] = 100*np.ones((n_items,n_mold)) # 5min set-up
+parameters["V"] = 3*np.ones((n_items, n_mold, n_machine)) # 3 sec / piece
+parameters["it"] = 3600*np.ones((n_mold, n_machine)) # 1h each operation
+parameters["dt"] = 1800*np.ones((n_mold, n_machine)) # 30min each operation
+parameters["tm"] = 1000000*np.ones((n_machine))
+
+parameters["dtype"] = np.float32
+## We make sure all the variables have the good size, the good format and that they follow the hypotheses of this problem.
+
+parameters_model  = init(parameters)
 
 
-st = 100*np.ones((n_items,n_mold)) # 5min set-up
-V = 3*np.ones((n_items, n_mold, n_machine)) # 3 sec / piece
-it = 3600*np.ones((n_mold, n_machine)) # 1h each operation
-dt = 1800*np.ones((n_mold, n_machine)) # 30min each operation
-tm = 3000000*np.ones((n_machine))
+## We use a decomposition approach. On the first part we use a Linear Programmation model:
+feasible =True
 
-Z, J,K, d, omega, M, I, st, it, dt, tm, V = init(n_items, n_mold, n_machine, d, omega, M, I, st, it,dt, tm, V, np.float32)
 
+B, X, N, Tj = [{} for _ in range(4)]
+hard_mold_constraint = True
+
+while(feasible):
     
-""" Relations between variables """
+    LP_results = LPModel(parameters_model,  hard_mold_constraint, np.float32)
+    show_results(parameters_model, LP_results)
+    LP_results2 = LPModel(parameters_model,  False, np.float32)
+    show_results(parameters_model, LP_results2)
+
+    # Wait here for the result
+    """ #Feasibility problem Mold Overlapping Detection MOD """
+    feasible  = False # MOD(LP_results)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+
+class work:
+    machine = -1
+    mold = -1
+    item = -1
+    production = 0
+    time = 0
+class machine:
+    number = -1
+    molds = []
+    items = []
+    prduction_speed = -1 # Might be a vector of mold too
+
+class mold:
+    number = -1
+    machines = []
+    items = []
     
-#zj, jk, iz, ik, zk, kz, kj, ij, ji = variables_relations(Z, J, K, I, M)
-
-B, X, N, Tj = LPModel(Z, J,K, d, omega, M, I, st, it, dt, tm, V, np.float32)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    
+"""
 
     
